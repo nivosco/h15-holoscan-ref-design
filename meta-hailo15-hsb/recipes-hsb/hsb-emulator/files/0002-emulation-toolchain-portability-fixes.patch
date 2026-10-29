@@ -1,0 +1,54 @@
+From b6bebe63cc814be6ad3987d53e9d34f71d096747 Mon Sep 17 00:00:00 2001
+From: nivosco <nivosco@gmail.com>
+Date: Wed, 28 Oct 2026 14:37:57 +0200
+Subject: [PATCH 2/2] emulation: toolchain portability fixes
+
+- rocev2_transmitter: brace-initialize sockaddr_in::sin_addr (struct in_addr)
+  instead of assigning a uint32_t, which older GCC rejects.
+- linux target: link Threads::Threads explicitly for glibc < 2.34.
+---
+ src/hololink/emulation/cmake/targets/linux.cmake         | 1 +
+ src/hololink/emulation/src/common/rocev2_transmitter.cpp | 2 +-
+ src/hololink/emulation/src/linux/CMakeLists.txt          | 1 +
+ 3 files changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/src/hololink/emulation/cmake/targets/linux.cmake b/src/hololink/emulation/cmake/targets/linux.cmake
+index 26e7125..a9b6304 100644
+--- a/src/hololink/emulation/cmake/targets/linux.cmake
++++ b/src/hololink/emulation/cmake/targets/linux.cmake
+@@ -49,6 +49,7 @@ endif()
+ 
+ # check dependencies
+ find_package(ZLIB)
++find_package(Threads REQUIRED)
+ include("${HOLOLINK_REL_PATH}/cmake/hololink_deps/dlpack.cmake")
+ 
+ ##### Standalone python environment handling
+diff --git a/src/hololink/emulation/src/common/rocev2_transmitter.cpp b/src/hololink/emulation/src/common/rocev2_transmitter.cpp
+index 15ee680..84da246 100644
+--- a/src/hololink/emulation/src/common/rocev2_transmitter.cpp
++++ b/src/hololink/emulation/src/common/rocev2_transmitter.cpp
+@@ -94,7 +94,7 @@ void update_packet_headers(RoCEv2Ctxt* rocev2_ctxt)
+     rocev2_ctxt->dest_addr = {
+         .sin_family = AF_INET,
+         .sin_port = udp_header->dest,
+-        .sin_addr = ip_header->daddr,
++        .sin_addr = { ip_header->daddr },
+     };
+ #endif
+ }
+diff --git a/src/hololink/emulation/src/linux/CMakeLists.txt b/src/hololink/emulation/src/linux/CMakeLists.txt
+index ed1b75b..4a5813e 100644
+--- a/src/hololink/emulation/src/linux/CMakeLists.txt
++++ b/src/hololink/emulation/src/linux/CMakeLists.txt
+@@ -41,6 +41,7 @@ target_link_libraries(emulation_host
+     PUBLIC
+         emulation_common
+         dlpack::dlpack
++        Threads::Threads
+         # DataPlane::send(DLTensor) cudaMemcpy's GPU-resident inputs into a host bounce
+         # buffer (LinuxDataPlaneCtxt::double_buffer) before forwarding to the transmitter.
+         # Absent when built with HSB_EMULATOR_ENABLE_CUDA=OFF; host-memory inputs only.
+-- 
+2.25.1
+

@@ -1,0 +1,38 @@
+From 7a350a4d4f0e0186f60dbb08cb468dbc3b583c7f Mon Sep 17 00:00:00 2001
+From: nivosco <nivosco@gmail.com>
+Date: Wed, 28 Oct 2026 15:48:16 +0200
+Subject: [PATCH 3/3] emulation: install all headers needed by out-of-tree
+ consumers
+
+linux_data_plane.hpp includes rocev2_data_plane.hpp and hsb_emulator.hpp
+includes address_map.hpp; neither was installed. Installed headers also
+include ../core/serializer.hpp, so install it under hololink/core.
+---
+ src/hololink/emulation/CMakeLists.txt | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/src/hololink/emulation/CMakeLists.txt b/src/hololink/emulation/CMakeLists.txt
+index 79160df..134a9e5 100644
+--- a/src/hololink/emulation/CMakeLists.txt
++++ b/src/hololink/emulation/CMakeLists.txt
+@@ -66,6 +66,8 @@ set(HSB_EMULATOR_INCS
+     ${CMAKE_CURRENT_SOURCE_DIR}/data_plane.hpp
+     ${CMAKE_CURRENT_SOURCE_DIR}/coe_data_plane.hpp
+     ${CMAKE_CURRENT_SOURCE_DIR}/linux_data_plane.hpp
++    ${CMAKE_CURRENT_SOURCE_DIR}/rocev2_data_plane.hpp
++    ${CMAKE_CURRENT_SOURCE_DIR}/address_map.hpp
+     ${CMAKE_CURRENT_SOURCE_DIR}/hsb_config.hpp
+     ${CMAKE_CURRENT_SOURCE_DIR}/hsb_emulator.hpp
+     ${CMAKE_CURRENT_SOURCE_DIR}/i2c_interface.hpp
+@@ -76,3 +78,8 @@ set(HSB_EMULATOR_INCS
+ install(FILES ${HSB_EMULATOR_INCS}
+     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/hololink/emulation
+     COMPONENT hololink-emulation)
++
++# Installed headers include "../core/serializer.hpp" relative to hololink/emulation.
++install(FILES ${HOLOLINK_REL_PATH}/src/hololink/core/serializer.hpp
++    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/hololink/core
++    COMPONENT hololink-emulation)
+-- 
+2.25.1
+

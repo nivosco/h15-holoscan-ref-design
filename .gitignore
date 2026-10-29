@@ -1,0 +1,20 @@
+build/
+build-*/
+*.o
+*.so
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+data-test-results/
+*.log
+node_modules/
+dist/
+
+# Editors and OS
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db

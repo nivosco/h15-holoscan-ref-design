@@ -1,0 +1,77 @@
+From 04c04ad24c62fe1f6380545239d61c1a7968228f Mon Sep 17 00:00:00 2001
+From: nivosco <nivosco@gmail.com>
+Date: Thu, 29 Oct 2026 10:45:02 +0200
+Subject: [PATCH 4/4] emulation: use ARMv8 CRC32 instructions for the RoCEv2
+ iCRC
+
+On aarch64 Linux, compute the zlib-compatible iCRC with the ARMv8 CRC32
+instructions when HWCAP_CRC32 is present, falling back to zlib otherwise.
+Profiling the emulator at 720p60 on a Cortex-A53 showed zlib crc32_z at
+~32% of the sending thread.
+---
+ .../src/common/rocev2_transmitter.cpp         | 42 +++++++++++++++++--
+ 1 file changed, 39 insertions(+), 3 deletions(-)
+
+diff --git a/src/hololink/emulation/src/common/rocev2_transmitter.cpp b/src/hololink/emulation/src/common/rocev2_transmitter.cpp
+index 84da246..cd20492 100644
+--- a/src/hololink/emulation/src/common/rocev2_transmitter.cpp
++++ b/src/hololink/emulation/src/common/rocev2_transmitter.cpp
+@@ -143,16 +143,52 @@ static inline uint32_t calculate_crc(const ETH_BufferTypeDef* tx_buffer)
+ }
+ #else
+ #include <zlib.h>
++#if defined(__aarch64__) && defined(__linux__)
++#include <arm_acle.h>
++#include <asm/hwcap.h>
++#include <sys/auxv.h>
++// zlib-compatible CRC-32 (same polynomial and pre/post inversion) using the ARMv8 CRC32
++// instructions; roughly an order of magnitude faster than table-driven zlib on Cortex-A53.
++__attribute__((target("+crc"))) static uint32_t crc32_armv8(uint32_t crc, const uint8_t* data, size_t length)
++{
++    crc = ~crc;
++    while (length >= sizeof(uint64_t)) {
++        uint64_t word;
++        memcpy(&word, data, sizeof(word));
++        crc = __crc32d(crc, word);
++        data += sizeof(word);
++        length -= sizeof(word);
++    }
++    while (length--) {
++        crc = __crc32b(crc, *data++);
++    }
++    return ~crc;
++}
++
++static uint32_t icrc32(uint32_t crc, const uint8_t* data, size_t length)
++{
++    static const bool has_crc32 = (getauxval(AT_HWCAP) & HWCAP_CRC32) != 0;
++    if (has_crc32) {
++        return crc32_armv8(crc, data, length);
++    }
++    return (uint32_t)crc32(crc, data, (uInt)length);
++}
++#else
++static uint32_t icrc32(uint32_t crc, const uint8_t* data, size_t length)
++{
++    return (uint32_t)crc32(crc, data, (uInt)length);
++}
++#endif
+ static inline uint32_t calculate_crc(const ETH_BufferTypeDef* tx_buffer)
+ {
+     static const uint8_t crc_init_buf[8] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+-    uint32_t crc = crc32(0L, crc_init_buf, sizeof(crc_init_buf));
++    uint32_t crc = icrc32(0L, crc_init_buf, sizeof(crc_init_buf));
+     const ETH_BufferTypeDef* cur = tx_buffer;
+     // need to skip the ethernet header in the CRC calculation
+-    crc = crc32(crc, cur->buffer + ETHER_HDR_LEN, cur->len - ETHER_HDR_LEN);
++    crc = icrc32(crc, cur->buffer + ETHER_HDR_LEN, cur->len - ETHER_HDR_LEN);
+     while (cur->next) {
+         cur = cur->next;
+-        crc = crc32(crc, cur->buffer, cur->len);
++        crc = icrc32(crc, cur->buffer, cur->len);
+     }
+     return crc;
+ }
+-- 
+2.25.1
+

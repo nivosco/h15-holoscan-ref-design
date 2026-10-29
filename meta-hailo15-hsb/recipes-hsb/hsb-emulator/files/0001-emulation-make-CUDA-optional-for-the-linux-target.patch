@@ -1,0 +1,135 @@
+From 55eb2b650aac1566e612ed0ac0ce7d77a66baad4 Mon Sep 17 00:00:00 2001
+From: nivosco <nivosco@gmail.com>
+Date: Wed, 28 Oct 2026 14:37:57 +0200
+Subject: [PATCH 1/2] emulation: make CUDA optional for the linux target
+
+Add HSB_EMULATOR_ENABLE_CUDA (default ON, unchanged behaviour). When OFF,
+the linux target skips enable_language(CUDA)/CUDAToolkit, links cudart only
+if present, skips the CUDA-only emulator_utils example library, and
+DataPlane::send() rejects GPU-resident DLTensors with a clear error.
+Host-memory (kDLCPU) inputs are unaffected.
+
+This allows building the emulator for embedded Linux SoCs without a
+CUDA toolkit (e.g. Hailo-15).
+---
+ src/hololink/emulation/CMakeLists.txt         |  1 +
+ .../emulation/cmake/targets/linux.cmake       | 22 +++++++++++++------
+ .../emulation/examples/CMakeLists.txt         |  2 +-
+ .../emulation/src/linux/CMakeLists.txt        |  3 ++-
+ .../emulation/src/linux/data_plane.cpp        |  7 ++++++
+ 5 files changed, 26 insertions(+), 9 deletions(-)
+
+diff --git a/src/hololink/emulation/CMakeLists.txt b/src/hololink/emulation/CMakeLists.txt
+index f794bff..79160df 100644
+--- a/src/hololink/emulation/CMakeLists.txt
++++ b/src/hololink/emulation/CMakeLists.txt
+@@ -19,6 +19,7 @@ cmake_minimum_required(VERSION 3.17)
+ option(HSB_EMULATOR_BUILD_PYTHON "When building standalone HSB Emulator, including building the python environment." ON)
+ set(HSB_EMULATOR_PYTHON_VENV "env" CACHE STRING "relative path (from build directory) to the standalone HSB Emulator's Python virtual environment")
+ set(HSB_EMULATOR_TARGET "linux" CACHE STRING "the target platform for the standalone HSB Emulator")
++option(HSB_EMULATOR_ENABLE_CUDA "Build the linux target with CUDA support (GPU-resident DLTensor inputs). Disable for hosts without a CUDA toolkit." ON)
+ 
+ set(HSB_EMULATOR_EMBEDDED_TARGETS STM32F767ZI TEMPLATE)
+ set(HSB_EMULATOR_TARGETS linux)
+diff --git a/src/hololink/emulation/cmake/targets/linux.cmake b/src/hololink/emulation/cmake/targets/linux.cmake
+index e6a03ce..26e7125 100644
+--- a/src/hololink/emulation/cmake/targets/linux.cmake
++++ b/src/hololink/emulation/cmake/targets/linux.cmake
+@@ -28,19 +28,27 @@ set(SEPARATE_FRAMEMETADATA_PACKET 0 CACHE STRING
+     "0=embed FrameMetadata in last payload packet (zero-pad); 1=send FrameMetadata as a separate packet")
+ add_compile_definitions(SEPARATE_FRAMEMETADATA_PACKET=${SEPARATE_FRAMEMETADATA_PACKET})
+ 
+-enable_language(CUDA)
++if (HSB_EMULATOR_ENABLE_CUDA)
++    enable_language(CUDA)
+ 
+-if (NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+-    if (CMAKE_VERSION VERSION_GREATER_EQUAL "3.24")
+-        set(CMAKE_CUDA_ARCHITECTURES native)
+-    else()
+-        set(CMAKE_CUDA_ARCHITECTURES 80 86 87) # covers all of Orin
++    if (NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
++        if (CMAKE_VERSION VERSION_GREATER_EQUAL "3.24")
++            set(CMAKE_CUDA_ARCHITECTURES native)
++        else()
++            set(CMAKE_CUDA_ARCHITECTURES 80 86 87) # covers all of Orin
++        endif()
+     endif()
++
++    find_package(CUDAToolkit)
++    if (CUDAToolkit_FOUND)
++        add_compile_definitions(HSB_EMULATOR_HAS_CUDA=1)
++    endif()
++elseif (HSB_EMULATOR_BUILD_PYTHON)
++    message(FATAL_ERROR "HSB_EMULATOR_BUILD_PYTHON requires HSB_EMULATOR_ENABLE_CUDA")
+ endif()
+ 
+ # check dependencies
+ find_package(ZLIB)
+-find_package(CUDAToolkit)
+ include("${HOLOLINK_REL_PATH}/cmake/hololink_deps/dlpack.cmake")
+ 
+ ##### Standalone python environment handling
+diff --git a/src/hololink/emulation/examples/CMakeLists.txt b/src/hololink/emulation/examples/CMakeLists.txt
+index 041ec59..69660ca 100644
+--- a/src/hololink/emulation/examples/CMakeLists.txt
++++ b/src/hololink/emulation/examples/CMakeLists.txt
+@@ -92,7 +92,7 @@ if (${HSB_EMULATOR_TARGET} STREQUAL "STM32F767ZI")
+     )
+ endif()
+ 
+-if (${HSB_EMULATOR_TARGET} STREQUAL "linux")
++if (${HSB_EMULATOR_TARGET} STREQUAL "linux" AND CUDAToolkit_FOUND)
+ 
+ # Create emulator_utils library for common functionality
+ add_library(emulator_utils STATIC
+diff --git a/src/hololink/emulation/src/linux/CMakeLists.txt b/src/hololink/emulation/src/linux/CMakeLists.txt
+index 8753c76..ed1b75b 100644
+--- a/src/hololink/emulation/src/linux/CMakeLists.txt
++++ b/src/hololink/emulation/src/linux/CMakeLists.txt
+@@ -43,7 +43,8 @@ target_link_libraries(emulation_host
+         dlpack::dlpack
+         # DataPlane::send(DLTensor) cudaMemcpy's GPU-resident inputs into a host bounce
+         # buffer (LinuxDataPlaneCtxt::double_buffer) before forwarding to the transmitter.
+-        CUDA::cudart
++        # Absent when built with HSB_EMULATOR_ENABLE_CUDA=OFF; host-memory inputs only.
++        $<TARGET_NAME_IF_EXISTS:CUDA::cudart>
+ )
+ 
+ set_property(TARGET emulation_host PROPERTY POSITION_INDEPENDENT_CODE ON)
+diff --git a/src/hololink/emulation/src/linux/data_plane.cpp b/src/hololink/emulation/src/linux/data_plane.cpp
+index d852d77..e55087b 100644
+--- a/src/hololink/emulation/src/linux/data_plane.cpp
++++ b/src/hololink/emulation/src/linux/data_plane.cpp
+@@ -29,7 +29,9 @@
+ #include <unistd.h>
+ 
+ #include "dlpack/dlpack.h"
++#if HSB_EMULATOR_HAS_CUDA
+ #include <cuda_runtime.h>
++#endif
+ 
+ #include "linux/data_plane.hpp"
+ #include "linux/hsb_emulator.hpp"
+@@ -284,6 +286,10 @@ static int64_t double_buffer_gpu_memory(uint8_t** double_buffer_, int64_t* doubl
+     // the copy when Unified Addressing is on, but the perf win isn't guaranteed.
+     case kDLCUDAManaged:
+     case kDLCUDA: {
++#if !HSB_EMULATOR_HAS_CUDA
++        Error_Handler("GPU-resident DLTensor requires an HSB Emulator built with HSB_EMULATOR_ENABLE_CUDA=ON");
++        return -1;
++#else
+         const int64_t n_bytes = DLTensor_n_bytes(tensor);
+         if (*double_buffer_size_ < n_bytes) {
+             uint8_t* buffer = (uint8_t*)realloc(*double_buffer_, n_bytes);
+@@ -302,6 +308,7 @@ static int64_t double_buffer_gpu_memory(uint8_t** double_buffer_, int64_t* doubl
+             return -1;
+         }
+         return n_bytes;
++#endif
+     }
+     default:
+         auto err_str = std::string("Unsupported device memory type: ") + std::to_string(tensor.device.device_type);
+-- 
+2.25.1
+
