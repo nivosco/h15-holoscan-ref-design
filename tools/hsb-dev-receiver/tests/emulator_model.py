@@ -143,7 +143,7 @@ def ipv4_udp_ethernet(udp_payload_with_icrc: bytes, destination_port: int) -> by
     body = udp_payload_with_icrc[:-ICRC_SIZE]
     icrc = compute_icrc(ip_header, udp_header, body).to_bytes(4, "little")
     ethernet = (
-        bytes.fromhex("c84d44270f00") + bytes.fromhex("428d0992fcc9") + b"\x08\x00"
+        bytes.fromhex("02005e100001") + bytes.fromhex("02005e100002") + b"\x08\x00"
     )
     return ethernet + ip_header + udp_header + body + icrc
 
@@ -153,8 +153,8 @@ class CoeEmulatorModel:
     """Generates COE Ethernet frames for consecutive frames."""
 
     payload_size: int = 1408
-    destination: bytes = bytes.fromhex("c84d44270f00")
-    source: bytes = bytes.fromhex("428d0992fcc9")
+    destination: bytes = bytes.fromhex("02005e100001")
+    source: bytes = bytes.fromhex("02005e100002")
     channel: int = 0
     psn: int = 0
     frame_number: int = 0

@@ -104,7 +104,7 @@ def test_roce_configuration_opens_gate_last(device, control) -> None:
 
 
 def test_coe_configuration_enables_1722b_last(device, control) -> None:
-    mac = bytes.fromhex("c84d44270f00")
+    mac = bytes.fromhex("02005e100001")
 
     host.configure_coe(control, mac, frame_size=1382400, bytes_per_line=1280, channel=2)
 
@@ -113,8 +113,8 @@ def test_coe_configuration_enables_1722b_last(device, control) -> None:
     assert qp & QP_ENABLE_1722B
     assert qp & 0x3F == 2
     assert (qp >> 25) & 0x7F == 11  # 2**11 = 2048 >= 1280
-    assert device.registers[hsb.DP_HOST_MAC_HIGH] == 0xC84D
-    assert device.registers[hsb.DP_HOST_MAC_LOW] == 0x44270F00
+    assert device.registers[hsb.DP_HOST_MAC_HIGH] == 0x0200
+    assert device.registers[hsb.DP_HOST_MAC_LOW] == 0x5E100001
 
 
 def test_stop_closes_both_gates(device, control) -> None:
@@ -124,6 +124,32 @@ def test_stop_closes_both_gates(device, control) -> None:
 
     assert device.registers[hsb.DP_HOST_UDP_PORT] == 0
     assert device.registers[hsb.DP_QP] == 0
+
+
+@pytest.fixture
+def silent_control(monkeypatch):
+    monkeypatch.setattr(host, "CONTROL_TIMEOUT_S", 0.01)
+    gone = FakeDevice()
+    gone.close()
+    channel = host.ControlChannel("127.0.0.1", gone.port)
+    yield channel
+    channel.close()
+
+
+def test_silent_device_raises_unreachable(silent_control) -> None:
+    with pytest.raises(host.DeviceUnreachableError):
+        silent_control.write(hsb.DP_QP, 0)
+
+
+def test_stop_reports_device_already_gone(silent_control) -> None:
+    assert host.stop_streaming_if_reachable(silent_control) is False
+
+
+def test_stop_if_reachable_closes_gates(device, control) -> None:
+    host.configure_roce(control, "10.0.0.2", 45000, frame_size=3072)
+
+    assert host.stop_streaming_if_reachable(control) is True
+    assert device.registers[hsb.DP_HOST_UDP_PORT] == 0
 
 
 @pytest.mark.parametrize(
