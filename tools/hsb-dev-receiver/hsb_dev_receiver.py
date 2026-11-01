@@ -259,7 +259,8 @@ def main() -> int:
             )
         return receive_roce(args, control, device.ip_address)
     finally:
-        host.stop_streaming(control)
+        if not host.stop_streaming_if_reachable(control):
+            print("device no longer answering; stream already stopped")
         control.close()
 
 

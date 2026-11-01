@@ -60,6 +60,10 @@ def discover(timeout_s: float, device_ip: str | None = None) -> Device:
     raise TimeoutError(f"no HSB enumeration packet within {timeout_s:.0f}s")
 
 
+class DeviceUnreachableError(RuntimeError):
+    """The device did not answer a control command after all retries."""
+
+
 class ControlChannel:
     """Register read/write over the HSB control protocol (UDP 8192)."""
 
@@ -134,7 +138,7 @@ class ControlChannel:
                     return reply
             except TimeoutError:
                 continue
-        raise RuntimeError(
+        raise DeviceUnreachableError(
             f"no reply to command 0x{command:02x} from {self._device[0]}"
         )
 
@@ -324,3 +328,25 @@ def stop_streaming(control: ControlChannel) -> None:
     """
     control.write(hsb.DP_HOST_UDP_PORT, 0)
     control.write(hsb.DP_QP, 0)
+
+
+def stop_streaming_if_reachable(control: ControlChannel) -> bool:
+    """Closes both transmit gates unless the device has already gone away.
+
+    A sender that exited first has nothing left to stop, so its silence is not an
+    error at shutdown.
+
+    Args:
+        control: Control channel to the device.
+
+    Returns:
+        True if the gates were closed, False if the device did not answer.
+
+    Raises:
+        RuntimeError: The device answered but rejected a write.
+    """
+    try:
+        stop_streaming(control)
+    except DeviceUnreachableError:
+        return False
+    return True

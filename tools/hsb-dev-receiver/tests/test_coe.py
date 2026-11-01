@@ -16,7 +16,7 @@ from hsb_tools.coe import (
     CoePacket,
 )
 
-DESTINATION = bytes.fromhex("c84d44270f00")
+DESTINATION = bytes.fromhex("02005e100001")
 
 
 def run(
