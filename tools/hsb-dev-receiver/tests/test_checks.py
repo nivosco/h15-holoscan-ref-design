@@ -4,7 +4,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import zlib
+from dataclasses import dataclass, field, replace
 
 from hsb_tools.checks import StreamChecker
 from hsb_tools.patterns import PatternType, build_frame
@@ -119,3 +120,53 @@ def test_loss_tolerant_pass_still_fails_on_corrupted_complete_frame() -> None:
 
     assert checker.report.complete_frame_errors == 1
     assert not checker.report.passed_allowing_loss
+
+
+def crc_frame(number: int, crc: int | None = None) -> FakeFrame:
+    fake = frame(number)
+    fake.metadata = replace(
+        fake.metadata, crc=zlib.crc32(fake.data) if crc is None else crc
+    )
+    return fake
+
+
+def test_matching_crc_passes() -> None:
+    checker = StreamChecker(WIDTH, HEIGHT, verify_pattern=False, verify_crc=True)
+
+    for number in range(5):
+        assert checker.add(crc_frame(number))
+
+    assert checker.report.passed
+    assert checker.report.crc_failures == 0
+
+
+def test_corrupted_payload_fails_crc() -> None:
+    checker = StreamChecker(WIDTH, HEIGHT, verify_pattern=False, verify_crc=True)
+    corrupted = crc_frame(0)
+    corrupted.data = bytes([corrupted.data[0] ^ 0x01]) + corrupted.data[1:]
+
+    assert not checker.add(corrupted)
+    assert checker.report.crc_failures == 1
+    assert checker.report.complete_frame_errors == 1
+    assert not checker.report.passed_allowing_loss
+
+
+def test_incomplete_frame_is_not_crc_checked() -> None:
+    checker = StreamChecker(WIDTH, HEIGHT, verify_pattern=False, verify_crc=True)
+    partial = crc_frame(0, crc=0)
+    partial.issues.append("psn gap")
+
+    checker.add(partial)
+
+    assert checker.report.crc_failures == 0
+    assert checker.report.complete_frame_errors == 0
+
+
+def test_sender_capture_clock_is_not_compared_with_send_clock() -> None:
+    # A capture-clock frame timestamp can be far ahead of the emulator's send clock.
+    checker = StreamChecker(WIDTH, HEIGHT, verify_pattern=False, verify_crc=True)
+    early_send = crc_frame(0)
+    early_send.metadata = replace(early_send.metadata, metadata_timestamp_ns=0)
+
+    assert checker.add(early_send)
+    assert checker.report.metadata_before_frame_start == 0

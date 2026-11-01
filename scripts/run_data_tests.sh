@@ -96,7 +96,7 @@ for pattern in "${PATTERNS[@]}"; do
     TEST_NAME="roce-live-${pattern}"
     start_sender $((SECONDS_PER_TEST + 6)) --pattern "${pattern}" --fps "${LIVE_FPS}"
     set +e
-    (cd "${TOOLS}" && python3 hsb_dev_receiver.py --device-ip "${BOARD_IP}" \
+    (cd "${TOOLS}" && python3 hsb_dev_receiver.py --check-crc --device-ip "${BOARD_IP}" \
         --seconds "${SECONDS_PER_TEST}" --report "${OUTPUT_DIR}/${TEST_NAME}.json" \
         --save-dir "${OUTPUT_DIR}/frames-${pattern}" --save-every 300 --save-failed --allow-loss \
         > "${OUTPUT_DIR}/${TEST_NAME}.log" 2>&1)
@@ -109,7 +109,7 @@ done
 log "3. RoCEv2 capture on the board (${CAPTURE_FPS} fps), offline check with iCRC"
 TEST_NAME="roce-pcap"
 start_sender 40 --pattern prbs --fps "${CAPTURE_FPS}"
-(cd "${TOOLS}" && python3 hsb_dev_receiver.py --device-ip "${BOARD_IP}" --seconds 30 \
+(cd "${TOOLS}" && python3 hsb_dev_receiver.py --check-crc --device-ip "${BOARD_IP}" --seconds 30 \
     --no-verify > "${OUTPUT_DIR}/${TEST_NAME}_receiver.log" 2>&1) &
 RECEIVER_PID=$!
 sleep 4
@@ -117,7 +117,7 @@ capture_on_board "udp src port 12288"
 wait "${RECEIVER_PID}" || true
 wait "${SENDER_PID}" || true
 set +e
-(cd "${TOOLS}" && python3 hsb_pcap_check.py "${OUTPUT_DIR}/${TEST_NAME}.pcap" \
+(cd "${TOOLS}" && python3 hsb_pcap_check.py --check-crc "${OUTPUT_DIR}/${TEST_NAME}.pcap" \
     --report "${OUTPUT_DIR}/${TEST_NAME}.json" > "${OUTPUT_DIR}/${TEST_NAME}.log" 2>&1)
 record "${TEST_NAME}" "$(pass_fail $?)"
 set -e
@@ -126,7 +126,7 @@ log "4. COE capture on the board (${CAPTURE_FPS} fps), offline check"
 for pattern in prbs bars; do
     TEST_NAME="coe-pcap-${pattern}"
     start_sender 40 --transport coe --pattern "${pattern}" --fps "${CAPTURE_FPS}"
-    (cd "${TOOLS}" && python3 hsb_dev_receiver.py --device-ip "${BOARD_IP}" \
+    (cd "${TOOLS}" && python3 hsb_dev_receiver.py --check-crc --device-ip "${BOARD_IP}" \
         --transport coe --host-mac "${HOST_MAC}" --seconds 30 \
         > "${OUTPUT_DIR}/${TEST_NAME}_host.log" 2>&1) &
     HOST_PID=$!
@@ -135,7 +135,7 @@ for pattern in prbs bars; do
     wait "${HOST_PID}" || true
     wait "${SENDER_PID}" || true
     set +e
-    (cd "${TOOLS}" && python3 hsb_pcap_check.py "${OUTPUT_DIR}/${TEST_NAME}.pcap" \
+    (cd "${TOOLS}" && python3 hsb_pcap_check.py --check-crc "${OUTPUT_DIR}/${TEST_NAME}.pcap" \
         --transport coe --host-mac "${HOST_MAC}" --save-dir "${OUTPUT_DIR}/frames-${TEST_NAME}" \
         --save-every 100 --report "${OUTPUT_DIR}/${TEST_NAME}.json" \
         > "${OUTPUT_DIR}/${TEST_NAME}.log" 2>&1)

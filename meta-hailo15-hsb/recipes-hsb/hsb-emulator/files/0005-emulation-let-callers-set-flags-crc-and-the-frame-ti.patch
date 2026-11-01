@@ -1,0 +1,126 @@
+From 2bcb27dcfe9105afc43bf76453c67818fc3487cf Mon Sep 17 00:00:00 2001
+From: nivosco <nivosco@gmail.com>
+Date: Sun, 1 Nov 2026 14:54:00 +0200
+Subject: [PATCH] emulation: let callers set flags, crc and the frame timestamp
+
+A caller-provided FrameMetadata used to be sent verbatim, so the caller had
+to know the transmitter-owned psn, frame_number and bytes_written and supply
+every field in network byte order. Merge only the caller-owned fields (flags,
+crc and the frame timestamp, in host byte order) into the transmitter metadata
+and fill the rest exactly as for DEFAULT_FRAME_METADATA, for both RoCEv2 and
+COE.
+---
+ src/hololink/emulation/base_transmitter.hpp   |  5 +++++
+ src/hololink/emulation/data_plane.hpp         |  4 ++++
+ .../emulation/src/common/base_transmitter.cpp | 19 +++++++++++++++++++
+ .../emulation/src/common/coe_transmitter.cpp  |  7 +++++++
+ .../src/common/rocev2_transmitter.cpp         |  7 +++++++
+ 5 files changed, 42 insertions(+)
+
+diff --git a/src/hololink/emulation/base_transmitter.hpp b/src/hololink/emulation/base_transmitter.hpp
+index 6bfd509..6215d8e 100644
+--- a/src/hololink/emulation/base_transmitter.hpp
++++ b/src/hololink/emulation/base_transmitter.hpp
+@@ -64,6 +64,11 @@ struct DataPlaneCtxt;
+ // Note that on failure, serializer and buffer contents are in indeterminate state.
+ size_t serialize_frame_metadata(hololink::core::Serializer& serializer, FrameMetadata& frame_metadata);
+ 
++// Copies the caller-owned fields of a FrameMetadata (flags, crc and the frame timestamp, in host
++// byte order) into a transmitter's network-order metadata. The transmitter still fills psn,
++// frame_number, bytes_written and the metadata timestamp itself.
++void merge_caller_frame_metadata(FrameMetadata& internal, const FrameMetadata& caller);
++
+ /**
+  * @brief Abstract base class for all transmitters
+  *
+diff --git a/src/hololink/emulation/data_plane.hpp b/src/hololink/emulation/data_plane.hpp
+index 191b0b8..56d9e32 100644
+--- a/src/hololink/emulation/data_plane.hpp
++++ b/src/hololink/emulation/data_plane.hpp
+@@ -220,6 +220,8 @@ public:
+      * @brief Send a tensor over the DataPlane.
+      * @param tensor The tensor object reference to send. Supported device types are kDLCPU, kDLCUDA, kDLCUDAHost (host pinned), and kDLCUDAManaged (Unified Memory)
+      * @param frame_metadata The frame metadata to send. Acts as a buffer flush. If nullptr, the data is by default buffered until the next send command that fills an MTU or a non-nullptr frame_metadata is provided.
++     * A caller-provided FrameMetadata supplies flags, crc and the frame timestamp in host byte order;
++     * psn, frame_number, bytes_written and the metadata timestamp are always filled by the emulator.
+      * @return The number of bytes sent or < 0 if error occurred.
+      *
+      * @note This method is synchronous. It will block and metadata will be protected by a mutex until the send is complete.
+@@ -231,6 +233,8 @@ public:
+      * @param buffer The buffer to send.
+      * @param buffer_size The size of the buffer.
+      * @param frame_metadata The frame metadata to send. Acts as a buffer flush. If nullptr, the data is by default buffered until the next send command that fills an MTU or a non-nullptr frame_metadata is provided.
++     * A caller-provided FrameMetadata supplies flags, crc and the frame timestamp in host byte order;
++     * psn, frame_number, bytes_written and the metadata timestamp are always filled by the emulator.
+      * @return The number of bytes sent or < 0 if error occurred.
+      */
+     int64_t send(const uint8_t* buffer, size_t buffer_size, FrameMetadata* frame_metadata = nullptr);
+diff --git a/src/hololink/emulation/src/common/base_transmitter.cpp b/src/hololink/emulation/src/common/base_transmitter.cpp
+index f744cc0..33c603f 100644
+--- a/src/hololink/emulation/src/common/base_transmitter.cpp
++++ b/src/hololink/emulation/src/common/base_transmitter.cpp
+@@ -23,6 +23,25 @@ namespace hololink::emulation {
+ 
+ struct FrameMetadata DEFAULT_FRAME_METADATA_STRUCT = {};
+ struct FrameMetadata* DEFAULT_FRAME_METADATA = &DEFAULT_FRAME_METADATA_STRUCT;
++
++static uint32_t to_big_endian(uint32_t value)
++{
++#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
++    return __builtin_bswap32(value);
++#else
++    return value;
++#endif
++}
++
++void merge_caller_frame_metadata(FrameMetadata& internal, const FrameMetadata& caller)
++{
++    internal.flags = to_big_endian(caller.flags);
++    internal.crc = to_big_endian(caller.crc);
++    internal.timestamp_s_high = to_big_endian(caller.timestamp_s_high);
++    internal.timestamp_s_low = to_big_endian(caller.timestamp_s_low);
++    internal.timestamp_ns = to_big_endian(caller.timestamp_ns);
++}
++
+ // returns 0 on failure or the number of bytes written on success.
+ // Note that on failure, serializer and buffer contents are in indeterminate state.
+ size_t serialize_frame_metadata(hololink::core::Serializer& serializer, FrameMetadata& frame_metadata)
+diff --git a/src/hololink/emulation/src/common/coe_transmitter.cpp b/src/hololink/emulation/src/common/coe_transmitter.cpp
+index da84d73..2b86dec 100644
+--- a/src/hololink/emulation/src/common/coe_transmitter.cpp
++++ b/src/hololink/emulation/src/common/coe_transmitter.cpp
+@@ -279,6 +279,13 @@ int64_t COETransmitter::send(DataPlaneCtxt* ctxt, const uint8_t* buffer, size_t
+         COECtxt_mark_in_use(coe_ctxt);
+     }
+ 
++    // A caller-provided FrameMetadata contributes flags, crc and the frame timestamp; the
++    // transmitter fills the fields it owns exactly as for the default metadata.
++    if (frame_metadata && (frame_metadata != DEFAULT_FRAME_METADATA)) {
++        merge_caller_frame_metadata(coe_ctxt->frame_metadata, *frame_metadata);
++        frame_metadata = DEFAULT_FRAME_METADATA;
++    }
++
+     while (buffer_size || frame_metadata) {
+ 
+         int32_t sent_bytes = send_packet(coe_ctxt, buffer, buffer_size, &frame_metadata);
+diff --git a/src/hololink/emulation/src/common/rocev2_transmitter.cpp b/src/hololink/emulation/src/common/rocev2_transmitter.cpp
+index cd20492..aa58e0d 100644
+--- a/src/hololink/emulation/src/common/rocev2_transmitter.cpp
++++ b/src/hololink/emulation/src/common/rocev2_transmitter.cpp
+@@ -303,6 +303,13 @@ int64_t RoCEv2Transmitter::send(DataPlaneCtxt* ctxt, const uint8_t* buffer, size
+         }
+     }
+ 
++    // A caller-provided FrameMetadata contributes flags, crc and the frame timestamp; the
++    // transmitter fills the fields it owns exactly as for the default metadata.
++    if (frame_metadata && (frame_metadata != DEFAULT_FRAME_METADATA)) {
++        merge_caller_frame_metadata(rocev2_ctxt->frame_metadata, *frame_metadata);
++        frame_metadata = DEFAULT_FRAME_METADATA;
++    }
++
+     while (buffer_size || frame_metadata) {
+ 
+         int32_t sent_bytes = send_packet(rocev2_ctxt, buffer, buffer_size, &frame_metadata);
+-- 
+2.25.1
+

@@ -6,6 +6,8 @@
 #include "hololink/emulation/linux_data_plane.hpp"
 #include "hololink/emulation/net.hpp"
 
+#include "h15_hsb/frame_metadata.hpp"
+
 #include <arpa/inet.h>
 #include <getopt.h>
 #include <ifaddrs.h>
@@ -463,11 +465,13 @@ int run_sender(const SenderConfig &config)
         stamp_pattern_header(frame, config.pattern, static_cast<uint32_t>(frame_number), pattern_index,
                              pattern_count);
 
-        // The emulator fills frame number and timestamps itself; a caller-provided FrameMetadata
-        // is sent as raw bytes and would have to be big-endian already.
+        const auto capture_time = steady_clock::now();
+        auto metadata = h15_hsb::make_frame_metadata(
+            h15_hsb::frame_crc32(0, frame.data(), frame.size()),
+            static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(capture_time.time_since_epoch()).count()));
         const auto send_start = steady_clock::now();
-        const int64_t sent_bytes =
-            data_plane->send(frame.data(), frame.size(), emulation::DEFAULT_FRAME_METADATA);
+        const int64_t sent_bytes = data_plane->send(frame.data(), frame.size(), &metadata);
         const auto send_time = steady_clock::now() - send_start;
 
         if (sent_bytes < 0)

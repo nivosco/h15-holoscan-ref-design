@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import statistics
+import zlib
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -38,6 +39,7 @@ class StreamReport:
     frames_incomplete: int = 0
     frames_lost: int = 0
     pattern_failures: int = 0
+    crc_failures: int = 0
     counter_offset_changes: int = 0
     timestamp_regressions: int = 0
     metadata_before_frame_start: int = 0
@@ -72,6 +74,7 @@ class StreamReport:
             "frames_with_protocol_issues": self.frames_with_protocol_issues,
             "frames_lost": self.frames_lost,
             "pattern_failures": self.pattern_failures,
+            "crc_failures": self.crc_failures,
             "counter_offset_changes": self.counter_offset_changes,
             "timestamp_regressions": self.timestamp_regressions,
             "metadata_before_frame_start": self.metadata_before_frame_start,
@@ -118,17 +121,27 @@ class StreamReport:
 class StreamChecker:
     """Validates a sequence of frames against the synthetic sender's contract."""
 
-    def __init__(self, width: int, height: int, verify_pattern: bool = True) -> None:
+    def __init__(
+        self,
+        width: int,
+        height: int,
+        verify_pattern: bool = True,
+        verify_crc: bool = False,
+    ) -> None:
         """Creates a checker.
 
         Args:
             width: Frame width.
             height: Frame height.
             verify_pattern: Compare frame content with the expected test pattern.
+            verify_crc: Compare every complete frame with the CRC-32 the sender put
+                in its metadata. Such senders also stamp the frame timestamp with
+                their capture clock, which is not the emulator's send clock.
         """
         self.width = width
         self.height = height
         self.verify_pattern = verify_pattern
+        self.verify_crc = verify_crc
         self.report = StreamReport()
         self._last_frame_number: int | None = None
         self._last_timestamp_ns: int | None = None
@@ -171,6 +184,9 @@ class StreamChecker:
             report.frames_complete += 1
 
         ok &= self._check_timing(number, metadata)
+        if self.verify_crc and complete and not self._check_crc(number, frame):
+            report.complete_frame_errors += 1
+            ok = False
         if self.verify_pattern:
             content_ok = self._check_content(number, frame.data, complete)
             if complete and not content_ok:
@@ -183,7 +199,8 @@ class StreamChecker:
     def _check_timing(self, number: int, metadata: FrameMetadata) -> bool:
         report = self.report
         ok = True
-        if metadata.metadata_timestamp_ns < metadata.timestamp_ns:
+        same_clock = not self.verify_crc
+        if same_clock and metadata.metadata_timestamp_ns < metadata.timestamp_ns:
             report.metadata_before_frame_start += 1
             report.record(f"frame {number}: metadata timestamp precedes frame start")
             ok = False
@@ -197,6 +214,17 @@ class StreamChecker:
                 report.frame_periods_ms.append(period_ns / NANOSECONDS_PER_MILLISECOND)
         self._last_timestamp_ns = metadata.timestamp_ns
         return ok
+
+    def _check_crc(self, number: int, frame: ReceivedFrame) -> bool:
+        expected = frame.metadata.crc
+        actual = zlib.crc32(frame.data[: frame.metadata.bytes_written])
+        if actual == expected:
+            return True
+        self.report.crc_failures += 1
+        self.report.record(
+            f"frame {number}: crc 0x{actual:08x} != metadata crc 0x{expected:08x}"
+        )
+        return False
 
     def _check_content(self, number: int, data: bytes, complete: bool) -> bool:
         report = self.report
