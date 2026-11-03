@@ -16,6 +16,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <vector>
 
 enum class HsbTransport
 {
@@ -67,13 +68,16 @@ class HsbSinkStage : public hailo_analytics::pipeline::ThreadedStage
     HsbSinkStats take_stats();
 
   private:
-    bool send_frame(const HailoMediaLibraryBufferPtr &buffer, uint64_t &bytes_sent);
-    std::optional<int64_t> send_plane(const uint8_t *plane, uint32_t stride, uint32_t rows, uint32_t &crc);
+    void pack_frame(const HailoMediaLibraryBufferPtr &buffer);
+    bool send_frame(uint64_t isp_timestamp_ns, uint64_t &bytes_sent);
     void count_skipped_frames(uint64_t isp_timestamp_ns);
 
     HsbSinkConfig m_config;
     hololink::emulation::HSBEmulator m_hsb;
     std::unique_ptr<hololink::emulation::DataPlane> m_data_plane;
+    // Y and UV live in separate DMA buffers; the emulator ends a packet and advances the frame
+    // number on every send, so each frame is packed here and sent with a single call.
+    std::vector<uint8_t> m_frame;
     std::chrono::nanoseconds m_frame_interval;
     std::optional<uint64_t> m_last_isp_timestamp_ns;
     std::mutex m_stats_mutex;

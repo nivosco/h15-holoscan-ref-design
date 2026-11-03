@@ -193,8 +193,7 @@ static PipelinePtr build_pipeline(MediaLibraryInterfacePtr media_library, const 
         std::cerr << "No IPv4 address on " << options.interface_name << std::endl;
         return nullptr;
     }
-    HsbSinkConfig hsb_config{options.transport, *source_ip, hsb_stream.width, hsb_stream.height,
-                             hsb_stream.target_fps};
+    HsbSinkConfig hsb_config{options.transport, *source_ip, hsb_stream.width, hsb_stream.height, hsb_stream.target_fps};
     hsb_stage = std::make_shared<HsbSinkStage>(HSB_STAGE, hsb_config, HSB_QUEUE_SIZE);
 
     hailo_analytics::pipeline::PipelineBuilder builder;
@@ -212,9 +211,8 @@ static void print_stats(const HsbSinkStats &stats, std::chrono::duration<double>
 {
     const double seconds = elapsed.count();
     const double average_us =
-        stats.frames_sent
-            ? std::chrono::duration<double, std::micro>(stats.send_time_total).count() / stats.frames_sent
-            : 0.0;
+        stats.frames_sent ? std::chrono::duration<double, std::micro>(stats.send_time_total).count() / stats.frames_sent
+                          : 0.0;
     std::printf("fps=%.1f  Mbit/s=%.1f  send_avg_us=%.0f  send_max_us=%.0f  skipped=%llu  not_sent=%llu  "
                 "errors=%llu  bad_buffers=%llu  cpu=%.0f%%\n",
                 stats.frames_sent / seconds, stats.bytes_sent * BITS_PER_BYTE / MEGA / seconds, average_us,
