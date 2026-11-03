@@ -31,6 +31,8 @@ struct HsbSinkConfig
     uint32_t width = 0;
     uint32_t height = 0;
     uint32_t fps = 0;
+    int send_cpu = -1;
+    int send_priority = 0;
 };
 
 struct HsbSinkStats
@@ -68,6 +70,7 @@ class HsbSinkStage : public hailo_analytics::pipeline::ThreadedStage
     HsbSinkStats take_stats();
 
   private:
+    void apply_thread_policy();
     void pack_frame(const HailoMediaLibraryBufferPtr &buffer);
     bool send_frame(uint64_t isp_timestamp_ns, uint64_t &bytes_sent);
     void count_skipped_frames(uint64_t isp_timestamp_ns);
@@ -80,6 +83,7 @@ class HsbSinkStage : public hailo_analytics::pipeline::ThreadedStage
     std::vector<uint8_t> m_frame;
     std::chrono::nanoseconds m_frame_interval;
     std::optional<uint64_t> m_last_isp_timestamp_ns;
+    bool m_thread_policy_applied = false;
     std::mutex m_stats_mutex;
     HsbSinkStats m_stats;
 };

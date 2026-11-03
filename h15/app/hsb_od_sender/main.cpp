@@ -47,6 +47,9 @@ static constexpr const char *DEFAULT_HSB_STREAM = "sink0";
 static constexpr const char *DEFAULT_AI_STREAM = "sink1";
 static constexpr const char *DEFAULT_ZMQ_PORT = "7000";
 static constexpr const char *DEFAULT_TRANSPORT = "coe";
+// The Ethernet interrupt is served on CPU 0; the send thread gets a core of its own away from it.
+static constexpr const char *DEFAULT_SEND_CPU = "3";
+static constexpr const char *DEFAULT_SEND_PRIORITY = "50";
 static constexpr size_t HSB_QUEUE_SIZE = 2;
 static constexpr size_t METADATA_QUEUE_SIZE = 1;
 static constexpr double BITS_PER_BYTE = 8.0;
@@ -64,6 +67,8 @@ struct AppOptions
     std::string zmq_port;
     int timeout_seconds = 0;
     bool print_stats = false;
+    int send_cpu = -1;
+    int send_priority = 0;
 };
 
 static std::mutex g_stop_mutex;
@@ -83,6 +88,10 @@ static std::optional<AppOptions> parse_options(int argc, char **argv)
         ("hsb-stream", "Frontend stream sent over HSB", cxxopts::value<std::string>()->default_value(DEFAULT_HSB_STREAM))
         ("ai-stream", "Frontend stream fed to detection", cxxopts::value<std::string>()->default_value(DEFAULT_AI_STREAM))
         ("z,zmq-port", "Detection metadata ZMQ publisher port", cxxopts::value<std::string>()->default_value(DEFAULT_ZMQ_PORT))
+        ("send-cpu", "CPU the HSB send thread is pinned to (-1: not pinned)",
+            cxxopts::value<int>()->default_value(DEFAULT_SEND_CPU))
+        ("send-priority", "SCHED_FIFO priority of the HSB send thread (0: normal scheduling)",
+            cxxopts::value<int>()->default_value(DEFAULT_SEND_PRIORITY))
         ("s,timeout", "Stop after this many seconds (0: run until interrupted)", cxxopts::value<int>()->default_value("0"))
         ("p,print-stats", "Print HSB send statistics every second");
     // clang-format on
@@ -102,6 +111,8 @@ static std::optional<AppOptions> parse_options(int argc, char **argv)
     options.zmq_port = result["zmq-port"].as<std::string>();
     options.timeout_seconds = result["timeout"].as<int>();
     options.print_stats = result.count("print-stats") > 0;
+    options.send_cpu = result["send-cpu"].as<int>();
+    options.send_priority = result["send-priority"].as<int>();
 
     const auto transport = result["transport"].as<std::string>();
     if (transport != "coe" && transport != "roce")
@@ -193,7 +204,15 @@ static PipelinePtr build_pipeline(MediaLibraryInterfacePtr media_library, const 
         std::cerr << "No IPv4 address on " << options.interface_name << std::endl;
         return nullptr;
     }
-    HsbSinkConfig hsb_config{options.transport, *source_ip, hsb_stream.width, hsb_stream.height, hsb_stream.target_fps};
+    const HsbSinkConfig hsb_config{
+        .transport = options.transport,
+        .source_ip = *source_ip,
+        .width = hsb_stream.width,
+        .height = hsb_stream.height,
+        .fps = hsb_stream.target_fps,
+        .send_cpu = options.send_cpu,
+        .send_priority = options.send_priority,
+    };
     hsb_stage = std::make_shared<HsbSinkStage>(HSB_STAGE, hsb_config, HSB_QUEUE_SIZE);
 
     hailo_analytics::pipeline::PipelineBuilder builder;

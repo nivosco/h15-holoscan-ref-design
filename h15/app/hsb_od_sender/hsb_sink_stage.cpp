@@ -8,8 +8,12 @@
 #include "hololink/emulation/linux_data_plane.hpp"
 #include "hololink/emulation/net.hpp"
 
+#include <pthread.h>
+#include <sched.h>
+
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <utility>
 
@@ -56,6 +60,33 @@ AppStatus HsbSinkStage::deinit()
     m_hsb.stop();
     m_data_plane.reset();
     return AppStatus::SUCCESS;
+}
+
+void HsbSinkStage::apply_thread_policy()
+{
+    // process() runs on the stage's own thread, so the policy is applied on its first call.
+    m_thread_policy_applied = true;
+    if (m_config.send_cpu >= 0)
+    {
+        cpu_set_t cpus;
+        CPU_ZERO(&cpus);
+        CPU_SET(m_config.send_cpu, &cpus);
+        const int error = pthread_setaffinity_np(pthread_self(), sizeof(cpus), &cpus);
+        if (error != 0)
+        {
+            std::fprintf(stderr, "hsb_sink: cannot pin to CPU %d: %s\n", m_config.send_cpu, std::strerror(error));
+        }
+    }
+    if (m_config.send_priority > 0)
+    {
+        const sched_param parameters{.sched_priority = m_config.send_priority};
+        const int error = pthread_setschedparam(pthread_self(), SCHED_FIFO, &parameters);
+        if (error != 0)
+        {
+            std::fprintf(stderr, "hsb_sink: cannot set SCHED_FIFO priority %d: %s\n", m_config.send_priority,
+                         std::strerror(error));
+        }
+    }
 }
 
 HsbSinkStats HsbSinkStage::take_stats()
@@ -118,6 +149,10 @@ bool HsbSinkStage::send_frame(uint64_t isp_timestamp_ns, uint64_t &bytes_sent)
 
 AppStatus HsbSinkStage::process(hailo_analytics::pipeline::BufferPtr data)
 {
+    if (!m_thread_policy_applied)
+    {
+        apply_thread_policy();
+    }
     const HailoMediaLibraryBufferPtr buffer = data->get_buffer();
     if (!buffer || buffer->get_num_of_planes() != NV12_PLANE_COUNT)
     {
