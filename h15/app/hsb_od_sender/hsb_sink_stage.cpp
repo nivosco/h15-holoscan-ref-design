@@ -10,8 +10,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <utility>
-#include <vector>
 
 namespace emulation = hololink::emulation;
 using hailo_analytics::pipeline::AppStatus;
@@ -29,14 +29,9 @@ static constexpr bool TRACE_PROCESSING = false;
 static constexpr double SKIP_THRESHOLD_INTERVALS = 1.5;
 static constexpr int64_t NANOSECONDS_PER_SECOND = 1000000000;
 
-struct PlaneSegment
-{
-    const uint8_t *data;
-    size_t size;
-};
-
 HsbSinkStage::HsbSinkStage(std::string name, HsbSinkConfig config, size_t queue_size)
     : ThreadedStage(std::move(name), queue_size, LEAKY_QUEUE, TRACE_PROCESSING), m_config(std::move(config)),
+      m_frame(static_cast<size_t>(m_config.width) * (m_config.height + m_config.height / UV_ROWS_DIVISOR)),
       m_frame_interval(NANOSECONDS_PER_SECOND / m_config.fps)
 {
 }
@@ -84,52 +79,40 @@ void HsbSinkStage::count_skipped_frames(uint64_t isp_timestamp_ns)
     m_last_isp_timestamp_ns = isp_timestamp_ns;
 }
 
-static std::vector<PlaneSegment> nv12_segments(const HailoMediaLibraryBufferPtr &buffer, uint32_t width,
-                                               uint32_t height)
+void HsbSinkStage::pack_frame(const HailoMediaLibraryBufferPtr &buffer)
 {
-    std::vector<PlaneSegment> segments;
-    const uint32_t plane_rows[NV12_PLANE_COUNT] = {height, height / UV_ROWS_DIVISOR};
+    const uint32_t width = m_config.width;
+    const uint32_t plane_rows[NV12_PLANE_COUNT] = {m_config.height, m_config.height / UV_ROWS_DIVISOR};
+    uint8_t *destination = m_frame.data();
     for (uint32_t plane : {Y_PLANE, UV_PLANE})
     {
-        const auto *data = static_cast<const uint8_t *>(buffer->get_plane_ptr(plane));
+        const auto *source = static_cast<const uint8_t *>(buffer->get_plane_ptr(plane));
         const uint32_t stride = buffer->get_plane_stride(plane);
+        const size_t plane_size = static_cast<size_t>(width) * plane_rows[plane];
         if (stride == width)
         {
-            segments.push_back({data, static_cast<size_t>(width) * plane_rows[plane]});
+            std::memcpy(destination, source, plane_size);
+            destination += plane_size;
             continue;
         }
         for (uint32_t row = 0; row < plane_rows[plane]; row++)
         {
-            segments.push_back({data + static_cast<size_t>(row) * stride, width});
+            std::memcpy(destination, source + static_cast<size_t>(row) * stride, width);
+            destination += width;
         }
     }
-    return segments;
 }
 
-bool HsbSinkStage::send_frame(const HailoMediaLibraryBufferPtr &buffer, uint64_t &bytes_sent)
+bool HsbSinkStage::send_frame(uint64_t isp_timestamp_ns, uint64_t &bytes_sent)
 {
-    const auto segments = nv12_segments(buffer, m_config.width, m_config.height);
-
-    uint32_t crc = 0;
-    for (const auto &segment : segments)
+    const uint32_t crc = h15_hsb::frame_crc32(0, m_frame.data(), m_frame.size());
+    auto metadata = h15_hsb::make_frame_metadata(crc, isp_timestamp_ns);
+    const int64_t sent = m_data_plane->send(m_frame.data(), m_frame.size(), &metadata);
+    if (sent < 0)
     {
-        crc = h15_hsb::frame_crc32(crc, segment.data, segment.size);
+        return false;
     }
-    auto metadata = h15_hsb::make_frame_metadata(crc, buffer->isp_timestamp_ns);
-
-    // Every segment but the last is buffered by the emulator; the last one carries the metadata
-    // and ends the frame.
-    for (size_t index = 0; index < segments.size(); index++)
-    {
-        const bool last = index + 1 == segments.size();
-        const int64_t sent =
-            m_data_plane->send(segments[index].data, segments[index].size, last ? &metadata : nullptr);
-        if (sent < 0)
-        {
-            return false;
-        }
-        bytes_sent += static_cast<uint64_t>(sent);
-    }
+    bytes_sent = static_cast<uint64_t>(sent);
     return true;
 }
 
@@ -151,10 +134,11 @@ AppStatus HsbSinkStage::process(hailo_analytics::pipeline::BufferPtr data)
         return AppStatus::DMA_ERROR;
     }
     const auto send_start = std::chrono::steady_clock::now();
-    uint64_t bytes_sent = 0;
-    const bool sent_ok = send_frame(buffer, bytes_sent);
-    const auto send_time = std::chrono::steady_clock::now() - send_start;
+    pack_frame(buffer);
     buffer->sync_end();
+    uint64_t bytes_sent = 0;
+    const bool sent_ok = send_frame(buffer->isp_timestamp_ns, bytes_sent);
+    const auto send_time = std::chrono::steady_clock::now() - send_start;
 
     std::lock_guard<std::mutex> lock(m_stats_mutex);
     if (!sent_ok)

@@ -155,11 +155,16 @@ std::optional<PatternType> parse_pattern(const std::string &name)
 std::optional<SenderConfig> parse_arguments(int argc, char **argv)
 {
     static const option long_options[] = {
-        {"transport", required_argument, nullptr, 't'}, {"interface", required_argument, nullptr, 'i'},
-        {"ip", required_argument, nullptr, 'a'},        {"width", required_argument, nullptr, 'W'},
-        {"height", required_argument, nullptr, 'H'},    {"fps", required_argument, nullptr, 'f'},
-        {"frames", required_argument, nullptr, 'n'},    {"pattern", required_argument, nullptr, 'p'},
-        {"dump", required_argument, nullptr, 'd'},      {"help", no_argument, nullptr, 'h'},
+        {"transport", required_argument, nullptr, 't'},
+        {"interface", required_argument, nullptr, 'i'},
+        {"ip", required_argument, nullptr, 'a'},
+        {"width", required_argument, nullptr, 'W'},
+        {"height", required_argument, nullptr, 'H'},
+        {"fps", required_argument, nullptr, 'f'},
+        {"frames", required_argument, nullptr, 'n'},
+        {"pattern", required_argument, nullptr, 'p'},
+        {"dump", required_argument, nullptr, 'd'},
+        {"help", no_argument, nullptr, 'h'},
         {nullptr, 0, nullptr, 0},
     };
 
@@ -346,8 +351,8 @@ void put_big_endian(uint8_t *destination, uint64_t value, size_t size)
 }
 
 // Header: magic(4) version(1) pattern(1) reserved(2) counter(4) pattern_index(2) pattern_count(2).
-void stamp_pattern_header(std::vector<uint8_t> &frame, PatternType pattern, uint32_t counter,
-                          uint16_t pattern_index, uint16_t pattern_count)
+void stamp_pattern_header(std::vector<uint8_t> &frame, PatternType pattern, uint32_t counter, uint16_t pattern_index,
+                          uint16_t pattern_count)
 {
     uint8_t *header = frame.data();
     put_big_endian(header, PATTERN_HEADER_MAGIC, 4);
@@ -362,10 +367,10 @@ void stamp_pattern_header(std::vector<uint8_t> &frame, PatternType pattern, uint
 void print_interval(const IntervalStats &stats, std::chrono::duration<double> elapsed, double cpu_seconds)
 {
     const double seconds = elapsed.count();
-    const double average_send_us =
-        stats.frames_sent ? std::chrono::duration<double, std::micro>(stats.send_time_total).count() /
-                                static_cast<double>(stats.frames_sent)
-                          : 0.0;
+    const double average_send_us = stats.frames_sent
+                                       ? std::chrono::duration<double, std::micro>(stats.send_time_total).count() /
+                                             static_cast<double>(stats.frames_sent)
+                                       : 0.0;
     std::printf("fps=%.1f  Mbit/s=%.1f  send_avg_us=%.0f  send_max_us=%.0f  late=%llu  not_sent=%llu  "
                 "errors=%llu  cpu=%.0f%%\n",
                 static_cast<double>(stats.frames_sent) / seconds,
@@ -417,8 +422,7 @@ int run_sender(const SenderConfig &config)
 
         const auto pattern_index = static_cast<uint16_t>(frame_number % pattern_count);
         auto &frame = frames[pattern_index];
-        stamp_pattern_header(frame, config.pattern, static_cast<uint32_t>(frame_number), pattern_index,
-                             pattern_count);
+        stamp_pattern_header(frame, config.pattern, static_cast<uint32_t>(frame_number), pattern_index, pattern_count);
 
         const auto capture_time = steady_clock::now();
         auto metadata = h15_hsb::make_frame_metadata(
