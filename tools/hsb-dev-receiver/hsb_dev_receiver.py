@@ -6,7 +6,8 @@ Discovers an HSB Emulator and configures its data plane towards this machine.
 
 RoCEv2: receives over plain UDP, reassembles NV12 frames, verifies every frame
 against the synthetic sender's test pattern and protocol contract, and optionally
-displays or saves them.
+displays or saves them. With --detections it also subscribes to the sender's
+detection metadata, checks it, joins it to the frames by ISP timestamp and draws it.
 
 COE: configures the stream towards --host-mac and holds it for --seconds so it can be
 captured (for example with tcpdump on the board) and checked with hsb_pcap_check.py.
@@ -19,11 +20,13 @@ import json
 import socket
 import sys
 import time
+from collections import deque
 from pathlib import Path
 
 from hsb_tools import host
 from hsb_tools.assembler import FrameAssembler, StreamExpectations
 from hsb_tools.checks import StreamChecker
+from hsb_tools.metadata_feed import MetadataJoiner, MetadataSubscriber
 from hsb_tools.patterns import nv12_frame_size
 from hsb_tools.protocol import (
     ALIGNMENT,
@@ -40,6 +43,12 @@ MAX_DATAGRAM = 9000
 STATS_INTERVAL_S = 1.0
 BITS_PER_BYTE = 8
 MEGA = 1e6
+DEFAULT_ZMQ_PORT = 7000
+# Detection metadata trails its frame by the inference latency; frames wait this long
+# before they are drawn so their own detections can be overlaid.
+DISPLAY_DELAY_S = 0.3
+# Polling the metadata queue on every packet costs enough to drop packets at 720p60.
+METADATA_DRAIN_INTERVAL_S = 0.01
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -85,6 +94,12 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--save-failed", action="store_true", help="also save every failed frame"
     )
+    parser.add_argument(
+        "--detections",
+        action="store_true",
+        help="subscribe to detection metadata, check it, join and draw it",
+    )
+    parser.add_argument("--zmq-port", type=int, default=DEFAULT_ZMQ_PORT)
     parser.add_argument("--report", type=Path, help="write a JSON summary here")
     parser.add_argument(
         "--allow-loss",
@@ -198,6 +213,14 @@ def receive_roce(
         f"configured {args.width}x{args.height} NV12 ({frame_size} bytes), "
         f"{payload_size} bytes/packet"
     )
+    joiner = MetadataJoiner() if args.detections else None
+    subscriber = None
+    if joiner is not None:
+        address = f"tcp://{device_ip}:{args.zmq_port}"
+        subscriber = MetadataSubscriber(address)
+        print(f"detections from {address}")
+    delayed: deque[tuple[float, bytes, int, int, bool]] = deque()
+    last_drain = 0.0
 
     buffer = bytearray(MAX_DATAGRAM)
     view = memoryview(buffer)
@@ -212,13 +235,34 @@ def receive_roce(
             packet = RocePacket.parse(view[:length]) if length else None
             frame = assembler.handle(packet) if packet else None
             interval["packets"] += 1 if packet else 0
+            now = time.monotonic()
+            if subscriber is not None and now - last_drain >= METADATA_DRAIN_INTERVAL_S:
+                for message in subscriber.drain():
+                    joiner.add_message(message)
+                last_drain = now
             if frame is not None:
                 ok = checker.add(frame)
                 interval["frames"] += 1
                 interval["bytes"] += frame.bytes_received
                 interval["ok" if ok else "bad"] += 1
-                sink.handle(frame.data, frame.metadata.frame_number, ok)
-            now = time.monotonic()
+                metadata = frame.metadata
+                if joiner is not None:
+                    joiner.add_frame(metadata.timestamp_ns, metadata.frame_number)
+                    if sink.active:
+                        delayed.append(
+                            (
+                                now,
+                                frame.data,
+                                metadata.frame_number,
+                                metadata.timestamp_ns,
+                                ok,
+                            )
+                        )
+                else:
+                    sink.handle(frame.data, metadata.frame_number, ok)
+            while delayed and now - delayed[0][0] >= DISPLAY_DELAY_S:
+                _, data, number, timestamp_ns, ok = delayed.popleft()
+                sink.handle(data, number, ok, joiner.detections_at(timestamp_ns))
             if now - interval_start >= STATS_INTERVAL_S:
                 print_interval(interval, now - interval_start)
                 interval = dict.fromkeys(interval, 0)
@@ -228,25 +272,39 @@ def receive_roce(
     finally:
         sink.close()
         data_sock.close()
+        if subscriber is not None:
+            for message in subscriber.drain():
+                joiner.add_message(message)
+            subscriber.close()
 
     report = checker.report
     summary = report.summary()
     summary["passed_strict"] = report.passed
     summary["passed_allowing_loss"] = report.passed_allowing_loss
     passed = report.passed_allowing_loss if args.allow_loss else report.passed
+    if joiner is not None:
+        joiner.finish()
+        summary["detections"] = joiner.report.summary()
+        passed = passed and joiner.report.passed
     summary["passed"] = passed
     expected_frames = report.frames + report.frames_lost
     if expected_frames:
         summary["frame_loss_percent"] = round(
             100.0 * (expected_frames - report.frames_complete) / expected_frames, 2
         )
-    print(
-        json.dumps(
-            {key: value for key, value in summary.items() if key != "issues"}, indent=2
-        )
-    )
+    printed = {key: value for key, value in summary.items() if key != "issues"}
+    if joiner is not None:
+        printed["detections"] = {
+            key: value
+            for key, value in summary["detections"].items()
+            if key != "issues"
+        }
+    print(json.dumps(printed, indent=2))
     for issue in checker.report.issues[:10]:
         print(f"  issue: {issue}")
+    if joiner is not None:
+        for issue in joiner.report.issues[:10]:
+            print(f"  detections issue: {issue}")
     if args.report:
         args.report.write_text(json.dumps(summary, indent=2))
     return 0 if passed else 1
