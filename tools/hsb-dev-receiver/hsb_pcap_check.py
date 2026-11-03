@@ -59,6 +59,11 @@ def parse_arguments() -> argparse.Namespace:
         "--no-verify", action="store_true", help="skip test-pattern comparison"
     )
     parser.add_argument(
+        "--check-crc",
+        action="store_true",
+        help="verify each complete frame against the CRC-32 in its metadata",
+    )
+    parser.add_argument(
         "--save-dir", type=Path, help="save frames as .nv12 and .png here"
     )
     parser.add_argument("--save-every", type=int, default=60)
@@ -153,7 +158,12 @@ def main() -> int:
         0 when every frame and (for RoCE) every iCRC passed.
     """
     args = parse_arguments()
-    checker = StreamChecker(args.width, args.height, verify_pattern=not args.no_verify)
+    checker = StreamChecker(
+        args.width,
+        args.height,
+        verify_pattern=not args.no_verify,
+        verify_crc=args.check_crc,
+    )
     sink = FrameSink(
         args.width, args.height, False, args.save_dir, args.save_every, True
     )

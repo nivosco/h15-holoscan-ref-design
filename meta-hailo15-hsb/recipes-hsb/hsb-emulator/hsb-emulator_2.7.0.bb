@@ -8,6 +8,7 @@ SRC_URI = "git://github.com/nvidia-holoscan/holoscan-sensor-bridge.git;protocol=
            file://0002-emulation-toolchain-portability-fixes.patch;patchdir=${WORKDIR}/git \
            file://0003-emulation-install-all-headers-needed-by-out-of-tree-.patch;patchdir=${WORKDIR}/git \
            file://0004-emulation-use-ARMv8-CRC32-instructions-for-the-RoCEv.patch;patchdir=${WORKDIR}/git \
+           file://0005-emulation-let-callers-set-flags-crc-and-the-frame-ti.patch;patchdir=${WORKDIR}/git \
           "
 # tag 2.7.0
 SRCREV = "1df133d4c78a6921249be4b147d65554aa8efa68"

@@ -17,5 +17,6 @@ hsb_emulator_deps = [
 
 executable('hsb-synthetic-sender',
     'main.cpp',
+    include_directories: include_directories('../../common/include'),
     dependencies: hsb_emulator_deps,
     install: true)

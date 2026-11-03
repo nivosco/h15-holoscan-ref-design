@@ -6,9 +6,11 @@
 #include "hololink/emulation/linux_data_plane.hpp"
 #include "hololink/emulation/net.hpp"
 
+#include "h15_hsb/frame_metadata.hpp"
+#include "h15_hsb/system_utils.hpp"
+
 #include <arpa/inet.h>
 #include <getopt.h>
-#include <ifaddrs.h>
 #include <netinet/in.h>
 #include <unistd.h>
 
@@ -127,35 +129,6 @@ void print_usage(const char *program_name)
                 program_name);
 }
 
-std::optional<std::string> get_interface_ipv4(const std::string &interface_name)
-{
-    ifaddrs *interfaces = nullptr;
-    if (getifaddrs(&interfaces) != 0)
-    {
-        return std::nullopt;
-    }
-
-    std::optional<std::string> address;
-    for (ifaddrs *entry = interfaces; entry != nullptr; entry = entry->ifa_next)
-    {
-        if (entry->ifa_addr == nullptr || entry->ifa_addr->sa_family != AF_INET)
-        {
-            continue;
-        }
-        if (interface_name != entry->ifa_name)
-        {
-            continue;
-        }
-        char text[INET_ADDRSTRLEN] = {};
-        auto *ipv4 = reinterpret_cast<sockaddr_in *>(entry->ifa_addr);
-        inet_ntop(AF_INET, &ipv4->sin_addr, text, sizeof(text));
-        address = text;
-        break;
-    }
-    freeifaddrs(interfaces);
-    return address;
-}
-
 size_t nv12_frame_size(uint32_t width, uint32_t height)
 {
     const size_t luma_size = static_cast<size_t>(width) * height;
@@ -261,7 +234,7 @@ std::optional<SenderConfig> parse_arguments(int argc, char **argv)
 
     if (config.source_ip.empty())
     {
-        auto interface_ip = get_interface_ipv4(config.interface_name);
+        auto interface_ip = h15_hsb::get_interface_ipv4(config.interface_name);
         if (!interface_ip)
         {
             std::fprintf(stderr, "no IPv4 address on interface %s\n", config.interface_name.c_str());
@@ -386,22 +359,6 @@ void stamp_pattern_header(std::vector<uint8_t> &frame, PatternType pattern, uint
     put_big_endian(header + 14, pattern_count, 2);
 }
 
-double process_cpu_seconds()
-{
-    static const double clock_ticks_per_second = static_cast<double>(sysconf(_SC_CLK_TCK));
-    std::ifstream stat_file("/proc/self/stat");
-    std::string field;
-    // utime and stime are fields 14 and 15 of /proc/self/stat
-    static constexpr int UTIME_FIELD_INDEX = 14;
-    unsigned long long user_ticks = 0;
-    unsigned long long system_ticks = 0;
-    for (int field_index = 1; field_index < UTIME_FIELD_INDEX && stat_file >> field; field_index++)
-    {
-    }
-    stat_file >> user_ticks >> system_ticks;
-    return static_cast<double>(user_ticks + system_ticks) / clock_ticks_per_second;
-}
-
 void print_interval(const IntervalStats &stats, std::chrono::duration<double> elapsed, double cpu_seconds)
 {
     const double seconds = elapsed.count();
@@ -448,7 +405,7 @@ int run_sender(const SenderConfig &config)
     const auto frame_interval = std::chrono::nanoseconds(NANOSECONDS_PER_SECOND / config.fps);
     auto next_deadline = steady_clock::now();
     auto interval_start = next_deadline;
-    double interval_cpu_start = process_cpu_seconds();
+    double interval_cpu_start = h15_hsb::process_cpu_seconds();
     IntervalStats stats;
 
     for (uint64_t frame_number = 0; !g_stop_requested; frame_number++)
@@ -463,11 +420,13 @@ int run_sender(const SenderConfig &config)
         stamp_pattern_header(frame, config.pattern, static_cast<uint32_t>(frame_number), pattern_index,
                              pattern_count);
 
-        // The emulator fills frame number and timestamps itself; a caller-provided FrameMetadata
-        // is sent as raw bytes and would have to be big-endian already.
+        const auto capture_time = steady_clock::now();
+        auto metadata = h15_hsb::make_frame_metadata(
+            h15_hsb::frame_crc32(0, frame.data(), frame.size()),
+            static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(capture_time.time_since_epoch()).count()));
         const auto send_start = steady_clock::now();
-        const int64_t sent_bytes =
-            data_plane->send(frame.data(), frame.size(), emulation::DEFAULT_FRAME_METADATA);
+        const int64_t sent_bytes = data_plane->send(frame.data(), frame.size(), &metadata);
         const auto send_time = steady_clock::now() - send_start;
 
         if (sent_bytes < 0)
@@ -501,7 +460,7 @@ int run_sender(const SenderConfig &config)
         const auto elapsed = steady_clock::now() - interval_start;
         if (elapsed >= std::chrono::seconds(1))
         {
-            const double cpu_now = process_cpu_seconds();
+            const double cpu_now = h15_hsb::process_cpu_seconds();
             print_interval(stats, elapsed, cpu_now - interval_cpu_start);
             stats = IntervalStats{};
             interval_start = steady_clock::now();

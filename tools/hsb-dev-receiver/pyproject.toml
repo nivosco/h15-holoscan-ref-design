@@ -8,6 +8,7 @@ dependencies = ["numpy>=1.24"]
 
 [project.optional-dependencies]
 display = ["opencv-python>=4.8"]
+detections = ["pyzmq>=25"]
 test = ["pytest>=7"]
 
 [tool.ruff]
