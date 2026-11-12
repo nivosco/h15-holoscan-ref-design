@@ -24,6 +24,7 @@ hailo_deps = [
 executable('h15-hsb-sender',
     'main.cpp',
     'hsb_sink_stage.cpp',
+    'sensor_frame_rate_guard.cpp',
     include_directories: include_directories('../../common/include'),
     dependencies: hsb_emulator_deps + hailo_deps,
     install: true)
