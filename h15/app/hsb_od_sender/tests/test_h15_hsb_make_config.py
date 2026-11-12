@@ -59,8 +59,20 @@ def stock_profile(tmp_path: Path) -> Path:
             }
         )
     )
+    (profile_dir / "iq_settings.json").write_text(
+        json.dumps({"automatic_algorithms": {"AdaptiveAe": auto_exposure()}})
+    )
     (profile_dir / "calib.json").write_text("{}")
     return profile_dir
+
+
+def auto_exposure() -> dict:
+    shutter_ranges = [[3.8e-05, 0.004], [0.004, 0.033], [0.033, 0.033]]
+
+    def table() -> list:
+        return [[list(limits), [1, 10], [1.0, 1.0]] for limits in shutter_ranges]
+
+    return {"antiFlickerAfps": True, "priority": table(), "priorityHdr": table()}
 
 
 def test_stream_spec_parses_size_and_rate() -> None:
@@ -133,3 +145,30 @@ def test_build_config_sets_streams_rate_and_paths(
         ]["framerate"]
         == 30
     )
+
+
+def test_limit_auto_exposure_caps_shutter_to_the_frame_period() -> None:
+    iq_settings = {"automatic_algorithms": {"AdaptiveAe": auto_exposure()}}
+
+    make_config.limit_auto_exposure(iq_settings, 60)
+
+    auto = iq_settings["automatic_algorithms"]["AdaptiveAe"]
+    max_shutter_s = make_config.MAX_SHUTTER_FRACTION / 60
+    assert auto["antiFlickerAfps"] is False
+    for table in ("priority", "priorityHdr"):
+        assert [entry[0] for entry in auto[table]] == [
+            [3.8e-05, 0.004],
+            [0.004, max_shutter_s],
+            [max_shutter_s, max_shutter_s],
+        ]
+
+
+def test_build_config_limits_auto_exposure(tmp_path: Path, stock_profile: Path) -> None:
+    hsb = make_config.StreamSpec(1280, 720, 60)
+
+    make_config.build_config(stock_profile, tmp_path / "run", "hailo15h", hsb, hsb)
+
+    iq_settings = json.loads((tmp_path / "run/profile/iq_settings.json").read_text())
+    stock = json.loads((stock_profile / "iq_settings.json").read_text())
+    assert iq_settings["automatic_algorithms"]["AdaptiveAe"]["antiFlickerAfps"] is False
+    assert stock["automatic_algorithms"]["AdaptiveAe"]["antiFlickerAfps"] is True
