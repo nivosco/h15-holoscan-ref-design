@@ -32,6 +32,9 @@ static constexpr bool TRACE_PROCESSING = false;
 // dropped before this stage (leaky queue or frontend).
 static constexpr double SKIP_THRESHOLD_INTERVALS = 1.5;
 static constexpr int64_t NANOSECONDS_PER_SECOND = 1000000000;
+// After a failed send (for example with the cable unplugged), frames are dropped without sending
+// for this long, so an outage does not log an error for every frame.
+static constexpr auto SEND_RETRY_INTERVAL = std::chrono::seconds(1);
 
 HsbSinkStage::HsbSinkStage(std::string name, HsbSinkConfig config, size_t queue_size)
     : ThreadedStage(std::move(name), queue_size, LEAKY_QUEUE, TRACE_PROCESSING), m_config(std::move(config)),
@@ -95,6 +98,17 @@ HsbSinkStats HsbSinkStage::take_stats()
     return std::exchange(m_stats, HsbSinkStats{});
 }
 
+std::chrono::nanoseconds HsbSinkStage::current_send_duration() const
+{
+    const int64_t started_ticks = m_send_started_ticks;
+    if (started_ticks == 0)
+    {
+        return std::chrono::nanoseconds::zero();
+    }
+    const std::chrono::steady_clock::time_point started{std::chrono::steady_clock::duration(started_ticks)};
+    return std::chrono::steady_clock::now() - started;
+}
+
 void HsbSinkStage::count_skipped_frames(uint64_t isp_timestamp_ns)
 {
     if (m_last_isp_timestamp_ns.has_value() && isp_timestamp_ns > *m_last_isp_timestamp_ns)
@@ -138,7 +152,9 @@ bool HsbSinkStage::send_frame(uint64_t isp_timestamp_ns, uint64_t &bytes_sent)
 {
     const uint32_t crc = h15_hsb::frame_crc32(0, m_frame.data(), m_frame.size());
     auto metadata = h15_hsb::make_frame_metadata(crc, isp_timestamp_ns);
+    m_send_started_ticks = std::chrono::steady_clock::now().time_since_epoch().count();
     const int64_t sent = m_data_plane->send(m_frame.data(), m_frame.size(), &metadata);
+    m_send_started_ticks = 0;
     if (sent < 0)
     {
         return false;
@@ -162,6 +178,13 @@ AppStatus HsbSinkStage::process(hailo_analytics::pipeline::BufferPtr data)
     }
     count_skipped_frames(buffer->isp_timestamp_ns);
 
+    if (std::chrono::steady_clock::now() < m_next_send_attempt)
+    {
+        std::lock_guard<std::mutex> lock(m_stats_mutex);
+        m_stats.send_errors++;
+        return AppStatus::SUCCESS;
+    }
+
     if (buffer->sync_start() != media_library_return::MEDIA_LIBRARY_SUCCESS)
     {
         std::lock_guard<std::mutex> lock(m_stats_mutex);
@@ -178,6 +201,7 @@ AppStatus HsbSinkStage::process(hailo_analytics::pipeline::BufferPtr data)
     std::lock_guard<std::mutex> lock(m_stats_mutex);
     if (!sent_ok)
     {
+        m_next_send_attempt = send_start + SEND_RETRY_INTERVAL;
         m_stats.send_errors++;
         return AppStatus::PIPELINE_ERROR;
     }

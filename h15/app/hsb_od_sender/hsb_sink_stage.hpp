@@ -69,6 +69,11 @@ class HsbSinkStage : public hailo_analytics::pipeline::ThreadedStage
      */
     HsbSinkStats take_stats();
 
+    /**
+     * @brief Returns how long the send in progress has been running, or zero when none is.
+     */
+    std::chrono::nanoseconds current_send_duration() const;
+
   private:
     void apply_thread_policy();
     void pack_frame(const HailoMediaLibraryBufferPtr &buffer);
@@ -83,6 +88,9 @@ class HsbSinkStage : public hailo_analytics::pipeline::ThreadedStage
     std::vector<uint8_t> m_frame;
     std::chrono::nanoseconds m_frame_interval;
     std::optional<uint64_t> m_last_isp_timestamp_ns;
+    std::chrono::steady_clock::time_point m_next_send_attempt;
+    // Start of the send in progress, in steady clock ticks; zero when no send is running.
+    std::atomic<int64_t> m_send_started_ticks{0};
     bool m_thread_policy_applied = false;
     std::mutex m_stats_mutex;
     HsbSinkStats m_stats;

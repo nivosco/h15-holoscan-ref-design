@@ -27,6 +27,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
+#include <cstdlib>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -57,6 +58,9 @@ static constexpr double BITS_PER_BYTE = 8.0;
 static constexpr double MEGA = 1e6;
 static constexpr double PERCENT = 100.0;
 static constexpr auto STATS_INTERVAL = std::chrono::seconds(1);
+// A single frame normally sends in about 15 ms. A send blocked this long means the network stack
+// holds the socket's buffers and will not release them, so only a fresh process recovers.
+static constexpr auto SEND_STALL_TIMEOUT = std::chrono::seconds(5);
 
 struct AppOptions
 {
@@ -250,6 +254,21 @@ static uint64_t count_sensor_frames(const HsbSinkStats &stats)
     return stats.frames_sent + stats.frames_not_sent + stats.send_errors + stats.frames_skipped + stats.bad_buffers;
 }
 
+// The send thread cannot be stopped while it is blocked in the kernel, so the process exits
+// without the normal shutdown and the service starts a new one.
+static void exit_if_send_stalled(const HsbSinkStage &hsb_stage)
+{
+    const auto send_duration = hsb_stage.current_send_duration();
+    if (send_duration < SEND_STALL_TIMEOUT)
+    {
+        return;
+    }
+    std::printf("HSB send blocked for %.0f s; exiting so the sender can be restarted\n",
+                std::chrono::duration<double>(send_duration).count());
+    std::fflush(stdout);
+    std::_Exit(EXIT_FAILURE);
+}
+
 static void wait_for_stop(const AppOptions &options, HsbSinkStage &hsb_stage, SensorFrameRateGuard &frame_rate_guard)
 {
     const auto start = std::chrono::steady_clock::now();
@@ -263,6 +282,7 @@ static void wait_for_stop(const AppOptions &options, HsbSinkStage &hsb_stage, Se
         const HsbSinkStats stats = hsb_stage.take_stats();
         const double cpu_now = h15_hsb::process_cpu_seconds();
         frame_rate_guard.update(count_sensor_frames(stats), now - interval_start);
+        exit_if_send_stalled(hsb_stage);
         if (options.print_stats)
         {
             print_stats(stats, now - interval_start, cpu_now - interval_cpu_start);
