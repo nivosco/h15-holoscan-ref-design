@@ -7,6 +7,7 @@
 
 #include "h15_hsb/system_utils.hpp"
 #include "hsb_sink_stage.hpp"
+#include "sensor_frame_rate_guard.hpp"
 
 #include "hailo_analytics/analytics/ai_models_config.hpp"
 #include "hailo_postprocess_tools/labels/hailo_yolov8n.hpp"
@@ -243,7 +244,13 @@ static void print_stats(const HsbSinkStats &stats, std::chrono::duration<double>
     std::fflush(stdout);
 }
 
-static void wait_for_stop(const AppOptions &options, HsbSinkStage &hsb_stage)
+// Frames the sensor produced, including those dropped before or during sending.
+static uint64_t count_sensor_frames(const HsbSinkStats &stats)
+{
+    return stats.frames_sent + stats.frames_not_sent + stats.send_errors + stats.frames_skipped + stats.bad_buffers;
+}
+
+static void wait_for_stop(const AppOptions &options, HsbSinkStage &hsb_stage, SensorFrameRateGuard &frame_rate_guard)
 {
     const auto start = std::chrono::steady_clock::now();
     auto interval_start = start;
@@ -253,13 +260,15 @@ static void wait_for_stop(const AppOptions &options, HsbSinkStage &hsb_stage)
     {
         g_stop_cv.wait_for(lock, STATS_INTERVAL, [] { return g_stop_requested.load(); });
         const auto now = std::chrono::steady_clock::now();
+        const HsbSinkStats stats = hsb_stage.take_stats();
+        const double cpu_now = h15_hsb::process_cpu_seconds();
+        frame_rate_guard.update(count_sensor_frames(stats), now - interval_start);
         if (options.print_stats)
         {
-            const double cpu_now = h15_hsb::process_cpu_seconds();
-            print_stats(hsb_stage.take_stats(), now - interval_start, cpu_now - interval_cpu_start);
-            interval_start = now;
-            interval_cpu_start = cpu_now;
+            print_stats(stats, now - interval_start, cpu_now - interval_cpu_start);
         }
+        interval_start = now;
+        interval_cpu_start = cpu_now;
         if (options.timeout_seconds > 0 && now - start >= std::chrono::seconds(options.timeout_seconds))
         {
             break;
@@ -318,8 +327,9 @@ int main(int argc, char **argv)
     std::printf("%s: %ux%u NV12 @ %u fps over %s from %s, detections on ZMQ port %s\n", APP_NAME, hsb_stream->width,
                 hsb_stream->height, hsb_stream->target_fps, options->transport == HsbTransport::COE ? "COE" : "RoCEv2",
                 options->interface_name.c_str(), options->zmq_port.c_str());
+    SensorFrameRateGuard frame_rate_guard(hsb_stream->target_fps);
     pipeline->start();
-    wait_for_stop(*options, *hsb_stage);
+    wait_for_stop(*options, *hsb_stage, frame_rate_guard);
     pipeline->stop();
     media_library->shutdown();
     return 0;

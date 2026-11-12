@@ -6,7 +6,7 @@
 Starts from Hailo's stock daylight profile for the detected SoC and sensor, and
 changes only what the sender needs:
 
-* the sensor runs at the HSB frame rate;
+* the sensor runs at the HSB frame rate, and auto exposure keeps it there;
 * frontend stream ``sink0`` is the raw NV12 stream sent over HSB;
 * frontend stream ``sink1`` is the detection input;
 * no frontend stream is encoded.
@@ -33,6 +33,9 @@ HSB_STREAM_ID = "sink0"
 AI_STREAM_ID = "sink1"
 AI_WIDTH, AI_HEIGHT = 1920, 1080
 STREAM_POOL_BUFFERS = 20
+# Share of the frame period auto exposure may use as shutter time. The sensor
+# lengthens the frame to fit a longer exposure, which lowers the frame rate.
+MAX_SHUTTER_FRACTION = 0.9
 SOC_BY_MACHINE = {
     "HAILO-15": "hailo15h",
     "HAILO-15H": "hailo15h",
@@ -133,6 +136,25 @@ def _edit_json(path: Path, edit) -> None:
     path.write_text(json.dumps(data, indent=2) + "\n")
 
 
+def limit_auto_exposure(iq_settings: dict, fps: int) -> None:
+    """Keeps auto exposure from lowering the sensor frame rate.
+
+    Caps every shutter range in the adaptive auto exposure priority tables to
+    MAX_SHUTTER_FRACTION of the frame period, so darker scenes get more gain
+    instead of longer frames, and turns off automatic frame rate reduction.
+
+    Args:
+        iq_settings: Parsed ``iq_settings.json``; edited in place.
+        fps: Sensor frame rate.
+    """
+    auto_exposure = iq_settings["automatic_algorithms"]["AdaptiveAe"]
+    max_shutter_s = MAX_SHUTTER_FRACTION / fps
+    for table in ("priority", "priorityHdr"):
+        for entry in auto_exposure.get(table, []):
+            entry[0] = [min(limit, max_shutter_s) for limit in entry[0]]
+    auto_exposure["antiFlickerAfps"] = False
+
+
 def _rewrite_paths(directory: Path, old_prefix: str, new_prefix: str) -> None:
     for path in directory.glob("*.json"):
         path.write_text(path.read_text().replace(old_prefix, new_prefix))
@@ -162,6 +184,11 @@ def build_config(
     _edit_json(
         profile_out / "sensor_config.json",
         lambda data: data["input_video"]["resolution"].update(framerate=hsb.fps),
+    )
+
+    _edit_json(
+        profile_out / "iq_settings.json",
+        lambda data: limit_auto_exposure(data, hsb.fps),
     )
 
     def set_streams(data: dict) -> None:

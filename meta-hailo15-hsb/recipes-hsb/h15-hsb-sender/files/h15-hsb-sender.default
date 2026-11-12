@@ -1,0 +1,17 @@
+# Settings for /etc/init.d/h15-hsb-sender. Apply changes with
+# /etc/init.d/h15-hsb-sender restart.
+
+# Set to 0 to keep the sender from starting at boot.
+HSB_SENDER_ENABLED=1
+
+# Network interface the sender streams from.
+HSB_INTERFACE=eth0
+
+# Options for h15-hsb-make-config, which writes the media library configuration.
+# The SoC and sensor are detected; see h15-hsb-make-config --help.
+HSB_MAKE_CONFIG_OPTS=""
+
+# Options for h15-hsb-sender; see h15-hsb-sender --help.
+# COE is the Jetson AGX Thor transport. Use "--transport roce" for the
+# development receiver.
+HSB_SENDER_OPTS="--transport coe"
