@@ -15,3 +15,7 @@ HSB_MAKE_CONFIG_OPTS=""
 # COE is the Jetson AGX Thor transport. Use "--transport roce" for the
 # development receiver.
 HSB_SENDER_OPTS="--transport coe"
+
+# Media library log level (trace, debug, info, warn, err or off). Its log files
+# are in /var/log/h15-hsb-sender.
+MEDIALIB_LOG_LEVEL=info

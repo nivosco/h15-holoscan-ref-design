@@ -14,6 +14,9 @@ DAEMON=/usr/bin/h15-hsb-sender
 MAKE_CONFIG=/usr/bin/h15-hsb-make-config
 PIDFILE=/var/run/h15-hsb-sender.pid
 LOG_TAG=h15-hsb-sender
+# The Hailo libraries write their log files to the working directory; /var/log is in RAM,
+# which keeps their constant writes off the flash.
+LOG_DIR=/var/log/h15-hsb-sender
 RESPAWN_DELAY=2
 STOP_TIMEOUT=10
 
@@ -21,7 +24,9 @@ HSB_SENDER_ENABLED=1
 HSB_INTERFACE=eth0
 HSB_MAKE_CONFIG_OPTS=""
 HSB_SENDER_OPTS=""
+MEDIALIB_LOG_LEVEL=info
 [ -f /etc/default/h15-hsb-sender ] && . /etc/default/h15-hsb-sender
+export MEDIALIB_LOG_LEVEL
 
 . /etc/init.d/functions
 
@@ -73,8 +78,9 @@ start() {
         echo "h15-hsb-make-config failed: $config_output"
         return 1
     fi
+    mkdir -p $LOG_DIR
     start-stop-daemon --start --quiet --background --make-pidfile --pidfile $PIDFILE \
-        --startas /bin/sh -- -c "while true; do \
+        --startas /bin/sh -- -c "cd $LOG_DIR; while true; do \
             { $DAEMON --interface $HSB_INTERFACE $HSB_SENDER_OPTS; echo \"exited with status \$?\"; } \
                 2>&1 | logger -t $LOG_TAG; \
             sleep $RESPAWN_DELAY; \
