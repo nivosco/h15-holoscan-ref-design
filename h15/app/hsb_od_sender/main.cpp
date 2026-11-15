@@ -51,7 +51,9 @@ static constexpr const char *DEFAULT_ZMQ_PORT = "7000";
 static constexpr const char *DEFAULT_TRANSPORT = "coe";
 // The Ethernet interrupt is served on CPU 0; the send thread gets a core of its own away from it.
 static constexpr const char *DEFAULT_SEND_CPU = "3";
-static constexpr const char *DEFAULT_SEND_PRIORITY = "50";
+// A real-time send thread starves the frontend threads that share its core and makes the camera
+// drop frames, so the send thread uses normal scheduling unless asked otherwise.
+static constexpr const char *DEFAULT_SEND_PRIORITY = "0";
 static constexpr size_t HSB_QUEUE_SIZE = 2;
 static constexpr size_t METADATA_QUEUE_SIZE = 1;
 static constexpr double BITS_PER_BYTE = 8.0;
