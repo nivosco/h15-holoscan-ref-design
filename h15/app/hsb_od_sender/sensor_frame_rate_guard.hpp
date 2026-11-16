@@ -30,6 +30,14 @@ class SensorFrameRateGuard
      */
     void update(uint64_t sensor_frames, std::chrono::duration<double> elapsed);
 
+    /**
+     * @brief Drops the frames counted so far in the current measurement window.
+     *
+     * Call it for an interval whose frame count does not reflect the camera, such as one in
+     * which the pipeline was blocked downstream.
+     */
+    void discard_window();
+
   private:
     void check_window();
     bool shorten_sensor_frame(double measured_fps);

@@ -121,6 +121,11 @@ void SensorFrameRateGuard::update(uint64_t sensor_frames, std::chrono::duration<
         check_window();
     }
     m_startup_window_done = true;
+    discard_window();
+}
+
+void SensorFrameRateGuard::discard_window()
+{
     m_window_frames = 0;
     m_window_time = std::chrono::duration<double>::zero();
 }

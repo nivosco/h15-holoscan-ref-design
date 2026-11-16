@@ -63,6 +63,8 @@ static constexpr auto STATS_INTERVAL = std::chrono::seconds(1);
 // A single frame normally sends in about 15 ms. A send blocked this long means the network stack
 // holds the socket's buffers and will not release them, so only a fresh process recovers.
 static constexpr auto SEND_STALL_TIMEOUT = std::chrono::seconds(5);
+// Normal sends take up to about two frame periods; a send this long means the network blocked it.
+static constexpr auto BLOCKED_SEND_THRESHOLD = std::chrono::milliseconds(100);
 
 struct AppOptions
 {
@@ -271,6 +273,25 @@ static void exit_if_send_stalled(const HsbSinkStage &hsb_stage)
     std::_Exit(EXIT_FAILURE);
 }
 
+// While a send is blocked the frame queue drops frames before they are counted, so the frame
+// count of that interval does not reflect the camera rate.
+static bool send_was_blocked(const HsbSinkStats &stats, const HsbSinkStage &hsb_stage)
+{
+    return stats.send_time_max >= BLOCKED_SEND_THRESHOLD ||
+           hsb_stage.current_send_duration() >= BLOCKED_SEND_THRESHOLD;
+}
+
+static void update_frame_rate_guard(SensorFrameRateGuard &frame_rate_guard, const HsbSinkStats &stats,
+                                    const HsbSinkStage &hsb_stage, std::chrono::duration<double> elapsed)
+{
+    if (send_was_blocked(stats, hsb_stage))
+    {
+        frame_rate_guard.discard_window();
+        return;
+    }
+    frame_rate_guard.update(count_sensor_frames(stats), elapsed);
+}
+
 static void wait_for_stop(const AppOptions &options, HsbSinkStage &hsb_stage, SensorFrameRateGuard &frame_rate_guard)
 {
     const auto start = std::chrono::steady_clock::now();
@@ -283,7 +304,7 @@ static void wait_for_stop(const AppOptions &options, HsbSinkStage &hsb_stage, Se
         const auto now = std::chrono::steady_clock::now();
         const HsbSinkStats stats = hsb_stage.take_stats();
         const double cpu_now = h15_hsb::process_cpu_seconds();
-        frame_rate_guard.update(count_sensor_frames(stats), now - interval_start);
+        update_frame_rate_guard(frame_rate_guard, stats, hsb_stage, now - interval_start);
         exit_if_send_stalled(hsb_stage);
         if (options.print_stats)
         {
